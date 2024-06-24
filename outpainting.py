@@ -1,5 +1,27 @@
-# Stable Diffusion in Diffusers library
+"""
+Notes to self: 
+
+- code became unnecessarily long due to conversion to Openvino IR format (to make stable diffusion work on non nvidea gpu)
+- diffusers and automatic1111 models are different, conversion is currently hard to do
+- downgrading to stable diffusion 1.5 might be better? (at least according to forum sentiments)
+- fine-tuning the inpainting model instead of fusing the inpainting model with a fine-tuned base model could be better? (have to test next time)
+
+""" 
 from diffusers import StableDiffusionInpaintPipeline, DPMSolverMultistepScheduler, UNet2DConditionModel
+import gc
+from pathlib import Path
+import torch
+import numpy as np
+import openvino as ov
+import inspect
+from typing import List, Optional, Union, Dict
+import PIL
+import cv2
+from transformers import CLIPTokenizer
+from diffusers import DiffusionPipeline
+from diffusers.schedulers import DDIMScheduler, LMSDiscreteScheduler, PNDMScheduler
+from tqdm import trange
+import ipywidgets as widgets
 
 model_id_inpaint = "stabilityai/stable-diffusion-2-inpainting"
 
@@ -10,7 +32,6 @@ pipe_inpaint.fuse_lora(lora_scale=1)
 scheduler_inpaint = DPMSolverMultistepScheduler.from_config(pipe_inpaint.scheduler.config)
 
 
-import gc
 
 text_encoder_inpaint = pipe_inpaint.text_encoder
 text_encoder_inpaint.eval()
@@ -23,12 +44,6 @@ del pipe_inpaint
 gc.collect()
 
 # Convert models to OpenVINO Intermediate representation (IR) format
-
-from pathlib import Path
-import torch
-import numpy as np
-import openvino as ov
-
 sd2_inpainting_model_dir = Path("dsp-inpainting")
 sd2_inpainting_model_dir.mkdir(exist_ok=True)
 
@@ -217,17 +232,6 @@ del vae_inpaint
 gc.collect();
 
 # Prepare Inference Pipeline
-import inspect
-from typing import List, Optional, Union, Dict
-
-import PIL
-import cv2
-
-from transformers import CLIPTokenizer
-from diffusers import DiffusionPipeline
-from diffusers.schedulers import DDIMScheduler, LMSDiscreteScheduler, PNDMScheduler
-
-
 def prepare_mask_and_masked_image(image: PIL.Image.Image, mask: PIL.Image.Image):
     """
     Prepares a pair (image, mask) to be consumed by the Stable Diffusion pipeline. This means that those inputs will be
@@ -606,11 +610,7 @@ class OVStableDiffusionInpaintingPipeline(DiffusionPipeline):
         return timesteps, num_inference_steps - t_start
     
 
-# Generation
-
-from tqdm import trange
-
-
+########################################### GENERATION ##########################################
 def generate_image(
     pipe: OVStableDiffusionInpaintingPipeline,
     prompt: Union[str, List[str]],
@@ -626,21 +626,20 @@ def generate_image(
     Outpaint a single image with input image, with mask only on the right side
 
     Parameters:
-        pipe (OVStableDiffusionInpaintingPipeline): inpainting pipeline.
-        prompt (str or List[str]): The prompt or prompts to guide the image generation.
-        negative_prompt (str or List[str]): The negative prompt or prompts to guide the image generation.
-        input_image (PIL.Image.Image): The input image to be outpainted.
-        guidance_scale (float, *optional*, defaults to 7.5):
-            Guidance scale as defined in Classifier-Free Diffusion Guidance(https://arxiv.org/abs/2207.12598).
-            guidance_scale is defined as `w` of equation 2.
-            Higher guidance scale encourages to generate images that are closely linked to the text prompt,
-            usually at the expense of lower image quality.
-        num_inference_steps (int, *optional*, defaults to 50): The number of denoising steps for each frame. More denoising steps usually lead to a higher quality image at the expense of slower inference.
-        mask_width (int, *optional*, 21): size of border mask for inpainting on each step (modified to 21).
-        seed (int, *optional*, None): Seed for random generator state initialization.
-        side (int): 0 for left, 1 for right
-    Returns:
-        PIL.Image.Image: The outpainted image.
+
+    pipe (OVStableDiffusionInpaintingPipeline): inpainting pipeline.
+    prompt (str or List[str]): The prompt or prompts to guide the image generation.
+    negative_prompt (str or List[str]): The negative prompt or prompts to guide the image generation.
+    input_image (PIL.Image.Image): The input image to be outpainted.
+    guidance_scale (float, *optional*, defaults to 7.5):
+        Guidance scale as defined in Classifier-Free Diffusion Guidance(https://arxiv.org/abs/2207.12598).
+        guidance_scale is defined as `w` of equation 2.
+        Higher guidance scale encourages to generate images that are closely linked to the text prompt,
+        usually at the expense of lower image quality.
+    num_inference_steps (int, *optional*, defaults to 50): The number of denoising steps for each frame. More denoising steps usually lead to a higher quality image at the expense of slower inference.
+    mask_width (int, *optional*, 21): size of border mask for inpainting on each step (modified to 21).
+    seed (int, *optional*, None): Seed for random generator state initialization.
+    side (int): 0 for left, 1 for right
     """
 
     height = input_image.height
@@ -672,20 +671,11 @@ def generate_image(
     outpainted_image = images[0]
     pipe.set_progress_bar_config()
 
-    # No need for image grid or video generation/saving as we only need one outpainted image
-
     return outpainted_image
-
+################################ HELPER FUNCTS ######################
 def append_left_side(orig_image, output_image):
     """
     Appends the left 256 pixels of output_image to the resized_image.
-
-    Args:
-        orig_image: The image to which the left side of output_image will be appended.
-        output_image: The image from which the left 256 pixels will be extracted.
-
-    Returns:
-        The combined image with the appended left side.
     """
 
     # Check if the images have the same height
@@ -713,12 +703,6 @@ def append_left_side(orig_image, output_image):
 def outpaint_256_left(outpaint_input,right_side):
     """
     This function takes an image and outpaints the left side using a pre-trained inpainting model.
-
-    Args:
-        outpaint_input: The input image as a PIL Image object.
-
-    Returns:
-        A new PIL Image object with the outpainted region on the right side.
     """
 
     # Crop the first 512 pixels from the left side of the input image
@@ -739,9 +723,9 @@ def outpaint_256_left(outpaint_input,right_side):
     # Paste the first 256 pixels of the original image onto the right side of the modified_input
     modified_input.paste(first_256_pixels, (256, 0))
 
-    # Outpaint the black region using the inpainting model (function likely not shown here)
+    # Outpaint the black region using the inpainting model
     outpainted_image = generate_image(
-        pipe=ov_pipe_inpaint,  # Assuming this is the inpainting model
+        pipe=ov_pipe_inpaint,
         prompt=prompt,
         negative_prompt=negative_prompt,
         input_image=modified_input,
@@ -752,7 +736,7 @@ def outpaint_256_left(outpaint_input,right_side):
         side=right_side,
     )
 
-    # Append the outpainted image to the right side of the original image (function likely not shown here)
+    # Append the outpainted image to the right side of the original image
     output = append_left_side(outpaint_input, outpainted_image)
 
     # Return the final image with the outpainted region
@@ -761,13 +745,6 @@ def outpaint_256_left(outpaint_input,right_side):
 def append_right_side(orig_image, output_image):
     """
     Appends the right 256 pixels of output_image to the resized_image.
-
-    Args:
-        orig_image: The image to which the right side of output_image will be appended.
-        output_image: The image from which the right 256 pixels will be extracted.
-
-    Returns:
-        The combined image with the appended right side.
     """
     
     # Check if the images have the same height
@@ -793,12 +770,6 @@ def append_right_side(orig_image, output_image):
 def outpaint_256_right(outpaint_input,right_side):
     """
     This function takes an image and outpaints the right side using a pre-trained inpainting model.
-
-    Args:
-        outpaint_input: The input image as a PIL Image object.
-
-    Returns:
-        A new PIL Image object with the outpainted region on the right side.
     """
 
     # Crop the last 512 pixels from the right side of the input image
@@ -819,9 +790,9 @@ def outpaint_256_right(outpaint_input,right_side):
     # Paste the black image onto the right side of the modified_input, creating the inpainting region
     modified_input.paste(black_part, (last_512_pixels.width - 256, 0))
 
-    # Outpaint the black region using the inpainting model (function likely not shown here)
+    # Outpaint the black region using the inpainting model
     outpainted_image = generate_image(
-        pipe=ov_pipe_inpaint,  # Assuming this is the inpainting model
+        pipe=ov_pipe_inpaint,
         prompt=prompt,
         negative_prompt=negative_prompt,
         input_image=modified_input,
@@ -832,7 +803,7 @@ def outpaint_256_right(outpaint_input,right_side):
         side=right_side,
     )
 
-    # Append the outpainted image to the right side of the original image (function likely not shown here)
+    # Append the outpainted image to the right side of the original image
     output = append_right_side(outpaint_input, outpainted_image)
 
     # Return the final image with the outpainted region
@@ -841,12 +812,6 @@ def outpaint_256_right(outpaint_input,right_side):
 def outpaint(outpaint_input, repetitions=1, right_side=1):
     """
     Performs outpainting on the input image by calling outpaint_256_right
-
-    Args:
-        outpaint_input: The input image to be outpainted.
-
-    Returns:
-        The outpainted image.
     """
     
     outpainted_image = outpaint_input
@@ -864,7 +829,7 @@ core = ov.Core()
 
 tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
 
-import ipywidgets as widgets
+
 
 device = widgets.Dropdown(
     options=core.available_devices + ["AUTO"],
@@ -901,12 +866,12 @@ resized_image = input_image.resize((512, 512))
 
 # Prompt describing the desired content for the outpainted area
 prompt = "dsp room interior, good quality, even lighting, consistent wall color"
-# Negative prompt (optional, to avoid unwanted elements)
+# Negative prompt (to avoid unwanted elements)
 negative_prompt = "blurry, overexposure, uneven lighting, color bleeding, text, distorted details, asymmetrical, multiple angles, multiple views, deformed objects"
 # Other parameters (adjust as needed)
 guidance_scale = 20
 num_inference_steps = 25
-mask_width = 256  # pixels for mask on the right side
+mask_width = 256  # pixels for mask on the right or left side
 seed = 42  # Random seed for reproducibility (optional)
 
 

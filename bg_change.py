@@ -61,6 +61,8 @@ def process_videos(video_files):
     bg_image = bg_image_right
     #open background image
     image = pil_to_cv2(bg_image)
+    cv2.imwrite("background.png",cv2.resize(image,(1918,274)))
+    #image = np.zeros((512, 2048, 3), dtype=np.uint8)
     height, width = image.shape[:2]
     
     #Calculate width for each video frame in concatenated image
@@ -96,12 +98,13 @@ def process_videos(video_files):
             mask = cv2.GaussianBlur(mask, (61, 61), 0)
 
             #get condition where segmentation mask is 1 (i.e., person is present)
-            condition = results.segmentation_mask > 0.9
+            condition = results.segmentation_mask > 0.7
 
             #apply condition to the frame
             if i == middle:
                 mask[:] = 255
             else:
+                #mask[condition] = 255
                 mask[condition] = 255
 
             frames.append(frame)
@@ -165,6 +168,6 @@ def save_video(frame_array, video_filename, fps=30.0, fourcc="mp4v"):#fps is acc
     print(f"Video saved to: {video_filename}")
 
 # Call the function with your video files and background image
-frames = process_videos(['d4.mp4',"d3.mp4", 'd1.mp4',"d5.mp4"])
+frames = process_videos(['d4.mp4',"d3.mp4", 'd1.mp4',"d2.mp4"])
 save_video(frames,"output_video.mp4")
 #process_videos_v(['a5.mp4', 'a6.mp4', 'a7.mp4', 'a8.mp4'], 'bg3.jpg','output_mp3.mp4')
